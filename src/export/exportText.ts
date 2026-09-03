@@ -1,0 +1,1 @@
+export function exportText(contents:string,name:string){const url=URL.createObjectURL(new Blob([contents],{type:'text/plain'}));const a=document.createElement('a');a.href=url;a.download=name;a.click();URL.revokeObjectURL(url);}
