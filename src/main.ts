@@ -7,6 +7,7 @@ import type { WorkerResponse } from './pi/types';
 
 type Mode = 'normal' | 'search' | 'letters' | 'pixels' | 'binary' | 'god';
 const MAX_DIGITS = 1_000_000;
+const GODMOD3_PASSWORD_HASH = '67e9a0db5ddca0f5222f8242df5a136cb6d7e56c5529addd06f3ad30a9f68de2';
 const app = document.querySelector<HTMLDivElement>('#app')!;
 let mode: Mode = 'normal';
 let digits = '';
@@ -25,7 +26,7 @@ let colorPattern = '';
 let binarySize = 4;
 let binaryPattern: string[] = [];
 let godUnlocked = false;
-try { godUnlocked = localStorage.getItem('pi-explorer-godmod3') === 'unlocked'; } catch { /* Storage can be unavailable in private browser contexts. */ }
+try { godUnlocked = localStorage.getItem('piexplorer_godmod3_unlocked') === 'true'; } catch { /* Storage can be unavailable in private browser contexts. */ }
 
 app.innerHTML = `
   <header class="header">
@@ -125,8 +126,9 @@ function renderGodTools(panel: HTMLElement): void {
 function insertAtCursor(input: HTMLTextAreaElement, text: string): void { const start = input.selectionStart, end = input.selectionEnd; input.setRangeText(text, start, end, 'end'); const cursor = start + text.length - (text.endsWith('()') ? 1 : 0); input.setSelectionRange(cursor, cursor); input.focus(); }
 function calculateGod(expression: string, precision: number): void { const result = app.querySelector<HTMLElement>('#godResult'), status = app.querySelector<HTMLElement>('#godStatus'); if (!result || !status) return; if (!expression.trim()) { status.textContent = 'Enter an expression.'; return; } if (!Number.isSafeInteger(precision) || precision < 1 || precision > 1000) { status.textContent = 'Precision must be from 1 to 1,000.'; return; } status.textContent = 'Calculating in worker…'; result.textContent = '…'; const godWorker = new Worker(new URL('./workers/god.worker.ts', import.meta.url), { type: 'module' }); godWorker.onmessage = (event: MessageEvent<{ type: 'done'; value: string; elapsedMs: number } | { type: 'error'; message: string }>) => { godWorker.terminate(); if (event.data.type === 'done') { result.textContent = event.data.value; status.textContent = `Completed in ${event.data.elapsedMs.toFixed(2)} ms.`; } else { result.textContent = '—'; status.textContent = event.data.message; } }; godWorker.onerror = () => { godWorker.terminate(); result.textContent = '—'; status.textContent = 'Expression worker failed.'; }; godWorker.postMessage({ type: 'calculate', expression, precision }); }
 function openUnlockModal(): void { unlockModal.hidden = false; $('#unlockError').hidden = true; const password = $<HTMLInputElement>('#unlockPassword'); password.value = ''; password.focus(); }
-function closeUnlockModal(): void { unlockModal.hidden = true; }
-function unlockGod(): void { if ($<HTMLInputElement>('#unlockPassword').value !== 'trungghetdoi') { $('#unlockError').hidden = false; return; } godUnlocked = true; try { localStorage.setItem('pi-explorer-godmod3', 'unlocked'); } catch { /* The current session remains unlocked. */ } closeUnlockModal(); const nav = app.querySelector<HTMLElement>('.mode-nav')!; if (!nav.querySelector('[data-mode="god"]')) { const button = document.createElement('button'); button.dataset.mode = 'god'; button.textContent = 'GODMOD3'; button.onclick = () => setMode('god' as Mode); nav.append(button); } setMode('god' as Mode); }
+function closeUnlockModal(): void { $<HTMLInputElement>('#unlockPassword').value = ''; unlockModal.hidden = true; }
+async function hashPassword(value: string): Promise<string> { const buffer = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value)); return Array.from(new Uint8Array(buffer)).map(byte => byte.toString(16).padStart(2, '0')).join(''); }
+async function unlockGod(): Promise<void> { const password = $<HTMLInputElement>('#unlockPassword'); let matches = false; try { matches = (await hashPassword(password.value)) === GODMOD3_PASSWORD_HASH; } catch { $('#unlockError').textContent = 'Password verification is unavailable.'; $('#unlockError').hidden = false; return; } if (!matches) { password.value = ''; $('#unlockError').textContent = 'Incorrect password.'; $('#unlockError').hidden = false; password.focus(); return; } godUnlocked = true; try { localStorage.setItem('piexplorer_godmod3_unlocked', 'true'); } catch { /* The current session remains unlocked. */ } closeUnlockModal(); const nav = app.querySelector<HTMLElement>('.mode-nav')!; if (!nav.querySelector('[data-mode="god"]')) { const button = document.createElement('button'); button.dataset.mode = 'god'; button.textContent = 'GODMOD3'; button.onclick = () => setMode('god' as Mode); nav.append(button); } setMode('god' as Mode); }
 
 function showPixelResults(): void { const result = $('#patternResult'); result.innerHTML = matches.length ? `Matches: ${matches.length}. ${matches.map((match, index) => `#${index + 1} (${match.x}, ${match.y})`).join(' ')}<br><button id="previous">PREVIOUS</button> <button id="next">NEXT</button>` : 'Not found in calculated digits.'; $('#previous')?.addEventListener('click', () => navigate(-1)); $('#next')?.addEventListener('click', () => navigate(1)); }
 function navigate(delta: number): void { if (!matches.length) return; selected = (selected + delta + matches.length) % matches.length; renderer.focus(matches[selected]); render(); }
@@ -146,7 +148,7 @@ function startCalculation(): void {
 function stopCalculation(): void { worker?.postMessage({ type: 'cancel' }); worker?.terminate(); worker = undefined; closeModal(); updateMetadata(); }
 
 app.querySelectorAll<HTMLButtonElement>('[data-mode]').forEach(button => button.onclick = () => setMode(button.dataset.mode as Mode));
-$('#create').onclick = openModal; $('#unlockCancel').onclick = closeUnlockModal; $('#unlockConfirm').onclick = unlockGod; $<HTMLInputElement>('#unlockPassword').onkeydown = event => { if (event.key === 'Enter') unlockGod(); }; $('#cancel').onclick = () => worker ? stopCalculation() : closeModal(); $('#continue').onclick = closeModal; $('#start').onclick = startCalculation;
+$('#create').onclick = openModal; $('#unlockCancel').onclick = closeUnlockModal; $('#unlockConfirm').onclick = () => { void unlockGod(); }; $<HTMLInputElement>('#unlockPassword').onkeydown = event => { if (event.key === 'Enter') void unlockGod(); }; $('#cancel').onclick = () => worker ? stopCalculation() : closeModal(); $('#continue').onclick = closeModal; $('#start').onclick = startCalculation;
 app.querySelectorAll<HTMLButtonElement>('[data-preset]').forEach(button => button.onclick = () => { $<HTMLInputElement>('#count').value = button.dataset.preset!; $('#largeWarning').hidden = Number(button.dataset.preset) <= 100_000; });
 $<HTMLInputElement>('#count').oninput = () => { $('#largeWarning').hidden = Number($<HTMLInputElement>('#count').value) <= 100_000; };
 $('#speed').oninput = () => $('#speedValue').textContent = `${$<HTMLInputElement>('#speed').value} / 10`;
