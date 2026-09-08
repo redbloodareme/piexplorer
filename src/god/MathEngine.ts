@@ -1,0 +1,37 @@
+import { ChudnovskyEngine } from '../pi/Chudnovsky';
+
+export interface MathResult { value: string; elapsedMs: number; }
+type Token = { kind: 'number' | 'name' | 'operator' | 'end'; value: string };
+
+class FixedMath {
+  readonly scale: bigint;
+  private readonly guard = 10;
+  constructor(readonly precision: number) { if (!Number.isSafeInteger(precision) || precision < 1 || precision > 1000) throw new Error('Precision must be an integer from 1 to 1,000.'); this.scale = 10n ** BigInt(precision + this.guard); }
+  private trunc(value: bigint): bigint { return value; }
+  add(a: bigint, b: bigint) { return a + b; } sub(a: bigint, b: bigint) { return a - b; }
+  mul(a: bigint, b: bigint) { return a * b / this.scale; }
+  div(a: bigint, b: bigint) { if (b === 0n) throw new Error('Division by zero.'); return a * this.scale / b; }
+  integer(value: bigint) { return value * this.scale; }
+  sqrt(value: bigint) { if (value < 0n) throw new Error('Square root of a negative value is unsupported.'); return this.nthRoot(value, 2); }
+  nthRoot(value: bigint, degree: number): bigint { if (!Number.isSafeInteger(degree) || degree < 2) throw new Error('Root degree must be an integer of at least 2.'); if (value < 0n) { if (degree % 2 === 0) throw new Error('Even root of a negative value is unsupported.'); return -this.nthRoot(-value, degree); } if (value === 0n) return 0n; const n = BigInt(degree); const target = value * this.scale ** BigInt(degree - 1); const bits = target.toString(2).length; let x = 1n << BigInt(Math.ceil(bits / degree)); while (true) { const next = ((n - 1n) * x + target / (x ** BigInt(degree - 1))) / n; if (next >= x) return x; x = next; } }
+  pow(base: bigint, exponent: bigint): bigint { if (exponent % this.scale !== 0n) throw new Error('Only integer exponents are supported.'); let n = exponent / this.scale; if (n < 0n) return this.div(this.scale, this.pow(base, -exponent)); if (n > 10000n) throw new Error('Exponent is too large.'); let out = this.scale; while (n) { if (n & 1n) out = this.mul(out, base); base = this.mul(base, base); n >>= 1n; } return out; }
+  pi() { const raw = new ChudnovskyEngine().calculate(this.precision + this.guard).digits; return BigInt(raw.slice(0, this.precision + this.guard + 1)); }
+  e() { let sum = this.scale, term = this.scale; for (let i = 1; i < this.precision + this.guard + 20; i++) { term /= BigInt(i); if (!term) break; sum += term; } return sum; }
+  trig(value: bigint, type: 'sin' | 'cos' | 'tan'): bigint { const pi = this.pi(); const twoPi = 2n * pi; value %= twoPi; let sum = type === 'cos' ? this.scale : value, term = sum; for (let i = 1; i < 180; i++) { const divisor = BigInt((2 * i) * (2 * i + (type === 'cos' ? -1 : 1))); term = -this.mul(term, this.mul(value, value)) / divisor; sum += term; if (term === 0n) break; } return type === 'tan' ? this.div(this.trig(value, 'sin'), this.trig(value, 'cos')) : sum; }
+  format(value: bigint) { const negative = value < 0n; const digits = (negative ? -value : value).toString().padStart(this.precision + this.guard + 1, '0'); const whole = digits.slice(0, -this.precision - this.guard) || '0'; const fraction = digits.slice(-this.precision - this.guard, -this.guard).padEnd(this.precision, '0'); return `${negative ? '-' : ''}${whole}.${fraction}`; }
+}
+
+class Parser {
+  private pos = 0; private token: Token = { kind: 'end', value: '' };
+  constructor(private readonly input: string, private readonly math: FixedMath) { this.next(); }
+  parse() { const result = this.expression(); if (this.token.kind !== 'end') throw new Error(`Unexpected token “${this.token.value}”.`); return result; }
+  private next() { while (/\s/.test(this.input[this.pos] ?? '')) this.pos++; const char = this.input[this.pos]; if (!char) { this.token = { kind: 'end', value: '' }; return; } if (/\d|\./.test(char)) { const start = this.pos++; while (/\d|\./.test(this.input[this.pos] ?? '')) this.pos++; const value = this.input.slice(start, this.pos); if (!/^\d*\.?\d+$/.test(value)) throw new Error('Invalid decimal number.'); this.token = { kind: 'number', value }; return; } if (/[a-zA-Zπ√]/.test(char)) { const start = this.pos++; while (/[a-zA-Z0-9]/.test(this.input[this.pos] ?? '')) this.pos++; const value = this.input.slice(start, this.pos); this.token = { kind: 'name', value: value === 'π' ? 'pi' : value }; return; } this.pos++; this.token = { kind: 'operator', value: char === '×' ? '*' : char === '÷' ? '/' : char }; }
+  private expression(): bigint { let value = this.term(); while (this.token.value === '+' || this.token.value === '-') { const op = this.token.value; this.next(); value = op === '+' ? this.math.add(value, this.term()) : this.math.sub(value, this.term()); } return value; }
+  private term(): bigint { let value = this.power(); while (this.token.value === '*' || this.token.value === '/') { const op = this.token.value; this.next(); value = op === '*' ? this.math.mul(value, this.power()) : this.math.div(value, this.power()); } return value; }
+  private power(): bigint { let value = this.unary(); if (this.token.value === '^') { this.next(); value = this.math.pow(value, this.power()); } return value; }
+  private unary(): bigint { if (this.token.value === '-') { this.next(); return -this.unary(); } if (this.token.value === '+') { this.next(); return this.unary(); } return this.primary(); }
+  private primary(): bigint { if (this.token.kind === 'number') { const [whole, fraction = ''] = this.token.value.split('.'); this.next(); return BigInt(`${whole || '0'}${fraction}`) * this.math.scale / 10n ** BigInt(fraction.length); } if (this.token.value === '(') { this.next(); const value = this.expression(); if ((this.token.value as string) !== ')') throw new Error('Missing closing parenthesis.'); this.next(); return value; } if (this.token.kind === 'name') { const name = this.token.value.toLowerCase(); this.next(); if (name === 'pi') return this.math.pi(); if (name === 'e') return this.math.e(); if (name === '√') return this.math.sqrt(this.callArgument()); if (this.token.value !== '(') throw new Error(`Unsupported identifier “${name}”.`); this.next(); const args = [this.expression()]; while ((this.token.value as string) === ',') { this.next(); args.push(this.expression()); } if ((this.token.value as string) !== ')') throw new Error('Missing closing parenthesis.'); this.next(); if (name === 'sqrt' && args.length === 1) return this.math.sqrt(args[0]); if (name === 'root' && args.length === 2) { if (args[0] % this.math.scale !== 0n) throw new Error('Root degree must be an integer.'); return this.math.nthRoot(args[1], Number(args[0] / this.math.scale)); } if ((name === 'sin' || name === 'cos' || name === 'tan') && args.length === 1) return this.math.trig(args[0], name); throw new Error(`Unsupported function “${name}”.`); } throw new Error('Expected a number, constant, function, or parenthesized expression.'); }
+  private callArgument(): bigint { if (this.token.value === '(') { this.next(); const value = this.expression(); if ((this.token.value as string) !== ')') throw new Error('Missing closing parenthesis.'); this.next(); return value; } return this.primary(); }
+}
+
+export function calculateExpression(expression: string, precision: number): MathResult { const began = performance.now(); const math = new FixedMath(precision); const value = new Parser(expression.replaceAll('³√', 'root(3,').replaceAll('√', 'sqrt'), math).parse(); return { value: math.format(value), elapsedMs: performance.now() - began }; }

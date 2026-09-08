@@ -5,7 +5,7 @@ import { PixelRenderer } from './pixel/PixelRenderer';
 import { exportText } from './export/exportText';
 import type { WorkerResponse } from './pi/types';
 
-type Mode = 'normal' | 'search' | 'letters' | 'pixels' | 'binary';
+type Mode = 'normal' | 'search' | 'letters' | 'pixels' | 'binary' | 'god';
 const MAX_DIGITS = 1_000_000;
 const app = document.querySelector<HTMLDivElement>('#app')!;
 let mode: Mode = 'normal';
@@ -24,12 +24,14 @@ let width = 128;
 let colorPattern = '';
 let binarySize = 4;
 let binaryPattern: string[] = [];
+let godUnlocked = false;
+try { godUnlocked = localStorage.getItem('pi-explorer-godmod3') === 'unlocked'; } catch { /* Storage can be unavailable in private browser contexts. */ }
 
 app.innerHTML = `
   <header class="header">
     <div class="brand"><b>π</b> PI EXPLORER</div>
     <nav class="mode-nav" aria-label="Exploration modes">
-      <button data-mode="normal" class="active">NORMAL PI</button><button data-mode="search">SEARCH</button><button data-mode="letters">LETTERS</button><button data-mode="pixels">PIXEL</button><button data-mode="binary">BINARY GRID</button>
+      <button data-mode="normal" class="active">NORMAL PI</button><button data-mode="search">SEARCH</button><button data-mode="letters">LETTERS</button><button data-mode="pixels">PIXEL</button><button data-mode="binary">BINARY GRID</button>${godUnlocked ? '<button data-mode="god">GODMOD3</button>' : ''}
     </nav>
     <button id="create" class="primary">CREATE DIGITS</button>
   </header>
@@ -55,7 +57,8 @@ app.innerHTML = `
       <div id="calculationStatus" class="calculation-status" hidden><h2 id="calculationTitle">CALCULATING EXACT PI DIGITS</h2><div class="progress-track"><i id="progressBar"></i></div><div class="modal-stats"><span>PROGRESS <b id="modalProgress">0.00%</b></span><span>CALCULATED <b id="modalCalculated">0</b></span><span>ITERATION <b id="modalIteration">0</b></span><span>ELAPSED <b id="modalElapsed">0.00s</b></span><span>SPEED <b id="modalSpeed">—</b></span></div><pre id="modalDigits" class="modal-digits">π = awaiting calculation…</pre></div>
       <div class="modal-actions"><button id="cancel">CANCEL</button><button id="start" class="primary">START CALCULATION</button><button id="continue" class="primary" hidden>VIEW RESULT</button></div>
     </div>
-  </section>`;
+  </section>
+  <section id="unlockModal" class="unlock-modal" role="dialog" aria-modal="true" aria-labelledby="unlockTitle" hidden><div class="unlock-content"><h2 id="unlockTitle">Open GODMOD3?</h2><p>Type correct password</p><input id="unlockPassword" type="password" autocomplete="off" aria-label="GODMOD3 password"/><p id="unlockError" class="warning" hidden>Incorrect password.</p><button id="unlockConfirm" class="primary">UNLOCK</button><button id="unlockCancel">CANCEL</button></div></section>`;
 
 const $ = <T extends HTMLElement>(selector: string) => app.querySelector<T>(selector)!;
 const display = $('#display');
@@ -63,6 +66,7 @@ const canvasPanel = $('#canvasPanel');
 const canvas = $<HTMLCanvasElement>('#canvas');
 const renderer = new PixelRenderer(canvas);
 const modal = $('#createModal');
+const unlockModal = $('#unlockModal');
 
 function escapeHtml(value: string): string { return value.replace(/[&<>]/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[char]!)); }
 function formatDigits(): string {
@@ -81,6 +85,8 @@ function render(): void {
   canvasPanel.hidden = mode !== 'pixels' && mode !== 'binary';
   if (mode === 'letters') {
     display.innerHTML = `<div class="letter-source">SOURCE DIGITS<br>${formatDigits()}</div><div class="letter-result">CONVERTED LETTERS<br>${escapeHtml(toLetters(digits)) || '—'}</div><p class="mapping-note">Pairs 01–26 map to A–Z; 27 and above wrap cyclically; 00 maps to a space.</p>`;
+  } else if (mode === 'god') {
+    display.innerHTML = `<div class="god-display"><p class="eyebrow">ARBITRARY-PRECISION EXPRESSION LABORATORY</p><pre id="godResult">Enter an expression and calculate it in the dedicated worker.</pre><p id="godStatus" class="mapping-note">Ready.</p></div>`;
   } else if (mode === 'pixels' || mode === 'binary') {
     display.innerHTML = `<p class="canvas-description">${mode === 'pixels' ? 'Every calculated digit is shown with its deterministic palette color.' : 'Digits 0–4 are black; digits 5–9 are white.'} Index i → x = i mod ${width}, y = floor(i / ${width}). Use wheel to zoom and drag to pan.</p>`;
     renderer.render(digits, width, mode === 'binary', matches);
@@ -96,6 +102,7 @@ function updateMetadata(): void {
 function setMode(next: Mode): void { mode = next; matches = []; selected = 0; app.querySelectorAll<HTMLButtonElement>('[data-mode]').forEach(button => button.classList.toggle('active', button.dataset.mode === mode)); renderTools(); render(); }
 function renderTools(): void {
   const panel = $('#toolPanel');
+  if (mode === 'god') { renderGodTools(panel); return; }
   if (mode === 'normal') { panel.innerHTML = `<h2>NORMAL PI</h2><p>Exact Chudnovsky digits calculated in a dedicated Web Worker. Set the line length above without recalculating.</p>`; return; }
   if (mode === 'search') { panel.innerHTML = `<h2>SEARCH CALCULATED DIGITS</h2><input id="query" inputmode="numeric" aria-label="Digit sequence" placeholder="e.g. 1415"/><button id="search" class="primary">SEARCH</button><p id="searchResult">Searches only the digits that have actually been calculated. Overlapping matches are included.</p>`; const query = $<HTMLInputElement>('#query'); const search = () => { if (!/^\d+$/.test(query.value)) { $('#searchResult').textContent = 'Enter a non-empty digit sequence.'; return; } matches = findText(digits, query.value); $('#searchResult').textContent = matches.length ? `Matches: ${matches.length}. Positions: ${matches.map(item => item.index).join(', ')}` : 'Not found in calculated digits.'; render(); }; $('#search').onclick = search; query.onkeydown = event => { if (event.key === 'Enter') search(); }; return; }
   if (mode === 'letters') { panel.innerHTML = `<h2>NUMBER → LETTER</h2><p>Two digits form a letter. This mode preserves the calculated source above and provides selectable converted text.</p><button id="exportLetters">EXPORT LETTERS</button>`; $('#exportLetters').onclick = () => exportText(toLetters(digits), 'pi-letters.txt'); return; }
@@ -104,8 +111,23 @@ function renderTools(): void {
   panel.innerHTML = `<h2>DRAW BINARY PATTERN</h2><label>GRID SIZE <select id="gridSize">${[3, 4, 5, 6, 8].map(size => `<option value="${size}" ${size === binarySize ? 'selected' : ''}>${size} × ${size}</option>`).join('')}</select></label><div class="pattern-grid" style="grid-template-columns:repeat(${binarySize}, 24px)">${binaryPattern.join('').split('').map((value, index) => `<button data-cell="${index}" class="cell" style="background:${value === '1' ? '#ffffff' : '#000000'}" aria-label="${value === '1' ? 'White' : 'Black'} cell"></button>`).join('')}</div><p>Black requires 0–4. White requires 5–9.</p><button id="binarySearch" class="primary">SEARCH PATTERN</button><button id="binaryClear">CLEAR</button><p id="patternResult">Draw a pattern and search exact digit ranges.</p>`;
   $<HTMLSelectElement>('#gridSize').onchange = event => { binarySize = Number((event.target as HTMLSelectElement).value); binaryPattern = []; renderTools(); };
   panel.querySelectorAll<HTMLButtonElement>('[data-cell]').forEach(button => button.onclick = () => { const index = Number(button.dataset.cell); const y = Math.floor(index / binarySize), x = index % binarySize; binaryPattern[y] = binaryPattern[y].slice(0, x) + (binaryPattern[y][x] === '0' ? '1' : '0') + binaryPattern[y].slice(x + 1); renderTools(); });
-  $('#binaryClear').onclick = () => { binaryPattern = []; renderTools(); }; $('#binarySearch').onclick = () => { matches = findGrid(digits, width, binaryPattern, true); showPixelResults(); render(); };
+  $('#binaryClear').onclick = () => { binaryPattern = []; renderTools(); }; $('#binarySearch').onclick = () => { if (binarySize === 4 && binaryPattern.join('') === '1010010110100101') { openUnlockModal(); return; } matches = findGrid(digits, width, binaryPattern, true); showPixelResults(); render(); };
 }
+
+function renderGodTools(panel: HTMLElement): void {
+  panel.innerHTML = `<h2>GODMOD3</h2><textarea id="godExpression" rows="4" aria-label="Mathematical expression" placeholder="sqrt(2) + sqrt(3)"></textarea><label>PRECISION <input id="godPrecision" type="number" min="1" max="1000" value="50"/></label><div class="god-actions"><button id="godCalculate" class="primary">CALCULATE</button><button id="godClear">CLEAR</button><button id="godCopy">COPY RESULT</button></div><div class="math-keyboard">${[{ label: '0', value: '0' },{ label: '1', value: '1' },{ label: '2', value: '2' },{ label: '3', value: '3' },{ label: '4', value: '4' },{ label: '5', value: '5' },{ label: '6', value: '6' },{ label: '7', value: '7' },{ label: '8', value: '8' },{ label: '9', value: '9' },{ label: '+', value: ' + ' },{ label: '−', value: ' - ' },{ label: '×', value: ' × ' },{ label: '÷', value: ' ÷ ' },{ label: '.', value: '.' },{ label: '(', value: '(' },{ label: ')', value: ')' },{ label: '^', value: '^' },{ label: '√', value: 'sqrt()' },{ label: '³√', value: 'root(3,)' },{ label: 'nth root', value: 'root()' },{ label: 'a/b', value: '/' },{ label: 'sin()', value: 'sin()' },{ label: 'cos()', value: 'cos()' },{ label: 'tan()', value: 'tan()' },{ label: 'π', value: 'pi' },{ label: 'e', value: 'e' }].map(key => `<button data-key="${key.value}">${key.label}</button>`).join('')}</div><p class="mapping-note">Supports arithmetic, parentheses, integer powers, sqrt(), root(degree,value), π, e, sin(), cos(), and tan(). Precision is limited to 1,000 digits.</p>`;
+  const expression = $<HTMLTextAreaElement>('#godExpression');
+  panel.querySelectorAll<HTMLButtonElement>('[data-key]').forEach(button => button.onclick = () => insertAtCursor(expression, button.dataset.key!));
+  $('#godClear').onclick = () => { expression.value = ''; const result = app.querySelector<HTMLElement>('#godResult'); if (result) result.textContent = 'Enter an expression and calculate it in the dedicated worker.'; };
+  $('#godCopy').onclick = async () => { const result = app.querySelector<HTMLElement>('#godResult')?.textContent ?? ''; try { await navigator.clipboard.writeText(result); const status = app.querySelector<HTMLElement>('#godStatus'); if (status) status.textContent = 'Result copied.'; } catch { const status = app.querySelector<HTMLElement>('#godStatus'); if (status) status.textContent = 'Copy is unavailable in this browser context.'; } };
+  $('#godCalculate').onclick = () => calculateGod(expression.value, Number($<HTMLInputElement>('#godPrecision').value));
+}
+function insertAtCursor(input: HTMLTextAreaElement, text: string): void { const start = input.selectionStart, end = input.selectionEnd; input.setRangeText(text, start, end, 'end'); const cursor = start + text.length - (text.endsWith('()') ? 1 : 0); input.setSelectionRange(cursor, cursor); input.focus(); }
+function calculateGod(expression: string, precision: number): void { const result = app.querySelector<HTMLElement>('#godResult'), status = app.querySelector<HTMLElement>('#godStatus'); if (!result || !status) return; if (!expression.trim()) { status.textContent = 'Enter an expression.'; return; } if (!Number.isSafeInteger(precision) || precision < 1 || precision > 1000) { status.textContent = 'Precision must be from 1 to 1,000.'; return; } status.textContent = 'Calculating in worker…'; result.textContent = '…'; const godWorker = new Worker(new URL('./workers/god.worker.ts', import.meta.url), { type: 'module' }); godWorker.onmessage = (event: MessageEvent<{ type: 'done'; value: string; elapsedMs: number } | { type: 'error'; message: string }>) => { godWorker.terminate(); if (event.data.type === 'done') { result.textContent = event.data.value; status.textContent = `Completed in ${event.data.elapsedMs.toFixed(2)} ms.`; } else { result.textContent = '—'; status.textContent = event.data.message; } }; godWorker.onerror = () => { godWorker.terminate(); result.textContent = '—'; status.textContent = 'Expression worker failed.'; }; godWorker.postMessage({ type: 'calculate', expression, precision }); }
+function openUnlockModal(): void { unlockModal.hidden = false; $('#unlockError').hidden = true; const password = $<HTMLInputElement>('#unlockPassword'); password.value = ''; password.focus(); }
+function closeUnlockModal(): void { unlockModal.hidden = true; }
+function unlockGod(): void { if ($<HTMLInputElement>('#unlockPassword').value !== 'trungghetdoi') { $('#unlockError').hidden = false; return; } godUnlocked = true; try { localStorage.setItem('pi-explorer-godmod3', 'unlocked'); } catch { /* The current session remains unlocked. */ } closeUnlockModal(); const nav = app.querySelector<HTMLElement>('.mode-nav')!; if (!nav.querySelector('[data-mode="god"]')) { const button = document.createElement('button'); button.dataset.mode = 'god'; button.textContent = 'GODMOD3'; button.onclick = () => setMode('god' as Mode); nav.append(button); } setMode('god' as Mode); }
+
 function showPixelResults(): void { const result = $('#patternResult'); result.innerHTML = matches.length ? `Matches: ${matches.length}. ${matches.map((match, index) => `#${index + 1} (${match.x}, ${match.y})`).join(' ')}<br><button id="previous">PREVIOUS</button> <button id="next">NEXT</button>` : 'Not found in calculated digits.'; $('#previous')?.addEventListener('click', () => navigate(-1)); $('#next')?.addEventListener('click', () => navigate(1)); }
 function navigate(delta: number): void { if (!matches.length) return; selected = (selected + delta + matches.length) % matches.length; renderer.focus(matches[selected]); render(); }
 function openModal(): void { modal.hidden = false; modal.setAttribute('aria-hidden', 'false'); modal.dataset.state = 'setup'; document.body.classList.add('modal-open'); $('#setupFields').hidden = false; $('#calculationStatus').hidden = true; $('#start').hidden = false; $('#continue').hidden = true; $('#cancel').hidden = false; $('#cancel').textContent = 'CANCEL'; $<HTMLInputElement>('#count').focus(); }
@@ -124,7 +146,7 @@ function startCalculation(): void {
 function stopCalculation(): void { worker?.postMessage({ type: 'cancel' }); worker?.terminate(); worker = undefined; closeModal(); updateMetadata(); }
 
 app.querySelectorAll<HTMLButtonElement>('[data-mode]').forEach(button => button.onclick = () => setMode(button.dataset.mode as Mode));
-$('#create').onclick = openModal; $('#cancel').onclick = () => worker ? stopCalculation() : closeModal(); $('#continue').onclick = closeModal; $('#start').onclick = startCalculation;
+$('#create').onclick = openModal; $('#unlockCancel').onclick = closeUnlockModal; $('#unlockConfirm').onclick = unlockGod; $<HTMLInputElement>('#unlockPassword').onkeydown = event => { if (event.key === 'Enter') unlockGod(); }; $('#cancel').onclick = () => worker ? stopCalculation() : closeModal(); $('#continue').onclick = closeModal; $('#start').onclick = startCalculation;
 app.querySelectorAll<HTMLButtonElement>('[data-preset]').forEach(button => button.onclick = () => { $<HTMLInputElement>('#count').value = button.dataset.preset!; $('#largeWarning').hidden = Number(button.dataset.preset) <= 100_000; });
 $<HTMLInputElement>('#count').oninput = () => { $('#largeWarning').hidden = Number($<HTMLInputElement>('#count').value) <= 100_000; };
 $('#speed').oninput = () => $('#speedValue').textContent = `${$<HTMLInputElement>('#speed').value} / 10`;
