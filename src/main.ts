@@ -14,6 +14,8 @@ let worker: Worker | undefined;
 let iterations = 0;
 let elapsed = 0;
 let requested = 0;
+let completedTerms = 0;
+let totalTerms = 0;
 let paused = false;
 let digitsPerLine = 30;
 let matches: Match[] = [];
@@ -87,7 +89,7 @@ function render(): void {
 function updateMetadata(): void {
   const rate = elapsed ? `${Math.round(digits.length / (elapsed / 1000)).toLocaleString()} d/s` : '—';
   $('#requested').textContent = requested ? requested.toLocaleString() : '—'; $('#calculated').textContent = digits.length.toLocaleString(); $('#iterations').textContent = iterations.toLocaleString(); $('#elapsed').textContent = `${(elapsed / 1000).toFixed(2)}s`; $('#rate').textContent = rate;
-  const progress = requested ? Math.min(100, digits.length / requested * 100) : 0;
+  const progress = digits.length === requested && requested > 0 ? 100 : totalTerms > 0 ? Math.min(99.99, completedTerms / totalTerms * 100) : 0;
   $('#modalProgress').textContent = `${progress.toFixed(2)}%`; $('#modalCalculated').textContent = digits.length.toLocaleString(); $('#modalIteration').textContent = iterations.toLocaleString(); $('#modalElapsed').textContent = `${(elapsed / 1000).toFixed(2)}s`; $('#modalSpeed').textContent = rate; $<HTMLElement>('#progressBar').style.width = `${progress}%`;
   $('#modalDigits').textContent = digits ? `π = ${digits.slice(0, 180)}${digits.length > 180 ? '…' : ''}` : 'π = calculating exact terms…';
 }
@@ -111,11 +113,12 @@ function closeModal(): void { modal.hidden = true; modal.setAttribute('aria-hidd
 function startCalculation(): void {
   const count = Number($<HTMLInputElement>('#count').value);
   if (!Number.isSafeInteger(count) || count < 1 || count > MAX_DIGITS) { $('#largeWarning').hidden = false; $('#largeWarning').textContent = `Enter a whole number between 1 and ${MAX_DIGITS.toLocaleString()}.`; return; }
-  requested = count; digits = ''; matches = []; iterations = 0; elapsed = 0; paused = false;
+  requested = count; digits = ''; matches = []; iterations = 0; elapsed = 0; completedTerms = 0; totalTerms = 0; paused = false;
   modal.dataset.state = 'calculating'; $('#calculationTitle').textContent = 'CALCULATING EXACT PI DIGITS'; $('#setupFields').hidden = true; $('#calculationStatus').hidden = false; $('#start').hidden = true; $('#cancel').textContent = 'STOP'; updateMetadata(); render();
   worker?.terminate(); worker = new Worker(new URL('./workers/pi.worker.ts', import.meta.url), { type: 'module' });
-  worker.onmessage = (event: MessageEvent<WorkerResponse>) => { const message = event.data; if (message.type === 'progress') { iterations = message.iteration; elapsed = message.elapsedMs; } else if (message.type === 'chunk') { digits += message.digits; } else if (message.type === 'done') { iterations = message.iterations; elapsed = message.elapsedMs; worker?.terminate(); worker = undefined; modal.dataset.state = 'complete'; $('#calculationTitle').textContent = 'CALCULATION COMPLETE'; $('#continue').hidden = false; $('#cancel').hidden = true; } else { worker?.terminate(); worker = undefined; $('#largeWarning').hidden = false; $('#largeWarning').textContent = message.message; $('#setupFields').hidden = false; $('#calculationStatus').hidden = true; $('#start').hidden = false; } updateMetadata(); render(); };
+  worker.onmessage = (event: MessageEvent<WorkerResponse>) => { const message = event.data; if (message.type === 'progress') { iterations = message.iteration; completedTerms = message.iteration; totalTerms = message.totalIterations; elapsed = message.elapsedMs; } else if (message.type === 'chunk') { digits += message.digits; } else if (message.type === 'done') { iterations = message.iterations; completedTerms = message.iterations; totalTerms = message.iterations; elapsed = message.elapsedMs; worker?.terminate(); worker = undefined; modal.dataset.state = 'complete'; $('#calculationTitle').textContent = 'CALCULATION COMPLETE'; $('#continue').hidden = false; $('#cancel').hidden = true; } else { worker?.terminate(); worker = undefined; $('#largeWarning').hidden = false; $('#largeWarning').textContent = message.message; $('#setupFields').hidden = false; $('#calculationStatus').hidden = true; $('#start').hidden = false; } updateMetadata(); render(); };
   worker.onerror = () => { worker?.terminate(); worker = undefined; $('#largeWarning').hidden = false; $('#largeWarning').textContent = 'The calculation worker failed.'; };
+  worker.onmessageerror = () => { worker?.terminate(); worker = undefined; $('#largeWarning').hidden = false; $('#largeWarning').textContent = 'The application received an invalid calculation-worker message.'; };
   worker.postMessage({ type: 'start', digits: count, updateEvery: Math.max(250, Math.round(2500 / Number($<HTMLInputElement>('#speed').value))) });
 }
 function stopCalculation(): void { worker?.postMessage({ type: 'cancel' }); worker?.terminate(); worker = undefined; closeModal(); updateMetadata(); }
