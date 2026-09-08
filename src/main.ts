@@ -1,15 +1,133 @@
-import './styles/main.css'; import { toLetters,PALETTE } from './modes/transforms'; import { findText,findGrid, type Match } from './search/search'; import { PixelRenderer } from './pixel/PixelRenderer'; import { exportText } from './export/exportText'; import type { WorkerResponse } from './pi/types';
-type Mode='normal'|'letters'|'pixels'|'binary'; const app=document.querySelector<HTMLDivElement>('#app')!;
-let mode:Mode='normal',digits='',worker:Worker|undefined,iterations=0,started=0,elapsed=0,matches:Match[]=[],selected=0,paused=false,width=128,pattern='',binarySize=4,binaryPattern:string[]=[]; const maxDigits=1_000_000;
-app.innerHTML=`<header class="header"><div class="brand"><b>π</b> PI EXPLORER</div><label>MODE <select id="mode"><option value="normal">Normal Pi</option><option value="letters">Number → Letter</option><option value="pixels">Number → Pixel</option><option value="binary">Number → Two-Color Pixel</option></select></label></header><main class="shell"><section><div id="view" class="panel display" aria-live="polite"></div><div class="panel controls"><label>Digits to calculate<input id="count" type="number" min="1" max="1000000" value="1000"/></label><label>Speed <input id="speed" type="range" min="1" max="10" value="7"/><span id="speedLabel">7 / 10</span></label><button id="start">Start</button><button id="pause" disabled>Pause</button><button id="stop" disabled>Stop</button><button id="reset">Reset</button><button id="export">Export .txt</button></div><div class="panel stats"><div class="stat">PROGRESS<strong id="progress">0.00%</strong></div><div class="stat">CALCULATED<strong id="calculated">0</strong></div><div class="stat">SPEED<strong id="rate">—</strong></div><div class="stat">TIME<strong id="time">0.0s</strong></div><div class="stat">ITERATIONS<strong id="iterations">0</strong></div></div><div id="canvasPanel" class="panel canvas-wrap" hidden><canvas id="canvas" aria-label="Pi digit pixel canvas"></canvas></div></section><aside class="side"><section class="panel"><h2>HOW IT WORKS</h2><div class="result" id="how">Algorithm: Chudnovsky<br>Status: Ready<br>Requested digits: —<br>Calculated digits: 0<br>Iteration: 0</div></section><section class="panel" id="searchPanel"></section></aside></main>`;
-const $=<T extends HTMLElement>(s:string)=>app.querySelector<T>(s)!; const view=$('#view'),canvasPanel=$('#canvasPanel'),canvas=$<HTMLCanvasElement>('#canvas'),renderer=new PixelRenderer(canvas);
-function status(s:string){$('#how').innerHTML=`Algorithm: Chudnovsky (integer arbitrary precision)<br>Status: ${s}${paused?' (visualization paused; worker continues safely)':''}<br>Requested digits: ${$<HTMLInputElement>('#count').value}<br>Calculated digits: ${digits.length}<br>Iteration: ${iterations}`;}
-function fmt(n:number){return n.toLocaleString();} function highlights(text:string,ms:Match[]){let output='',at=0;for(const m of ms){output+=escapeHtml(text.slice(at,m.index))+`<mark class="highlight">${escapeHtml(text.slice(m.index,m.index+m.length))}</mark>`;at=m.index+m.length;}return output+escapeHtml(text.slice(at));}function escapeHtml(s:string){return s.replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]!));}
-function render(){canvasPanel.hidden=!(mode==='pixels'||mode==='binary'); if(mode==='normal'){view.className='panel display';view.innerHTML=digits?`<span class="pi-int">${digits[0]}.</span>${highlights(digits.slice(1),matches.map(m=>({...m,index:m.index-1})))}`:'<span class="muted">Choose a digit count, then start a real Chudnovsky calculation.</span>';}else if(mode==='letters'){view.className='panel letter-output';view.innerHTML=highlights(toLetters(digits),matches);}else {view.className='panel display';view.innerHTML=`<strong>${mode==='pixels'?'Number → Pixel':'Two-color pixel'} laboratory</strong><br><span class="muted">Index i maps to x = i mod ${width}, y = floor(i / ${width}). Canvas renders only its visible region.</span>`; renderer.render(digits,width,mode==='binary',matches);}}
-function setMode(){mode=$<HTMLSelectElement>('#mode').value as Mode;matches=[];selected=0;renderSearch();render();}
-function renderSearch(){const p=$('#searchPanel'); if(mode==='normal'||mode==='letters'){p.innerHTML=`<h2>${mode==='normal'?'SEARCH NUMBER':'SEARCH TEXT'}</h2><div class="search"><input id="query" aria-label="Search query" placeholder="${mode==='normal'?'Digits actually calculated':'Converted letters'}"/><button id="search">Search</button><div class="result" id="results">Enter a query to search calculated data.</div></div>`;$('#search').onclick=()=>{const q=$<HTMLInputElement>('#query').value.toUpperCase();if(!q|| (mode==='normal'&&!/^\d+$/.test(q))){$('#results').textContent='Enter a valid non-empty query.';return;}matches=findText(mode==='normal'?digits:toLetters(digits),q);$('#results').textContent=matches.length?`Matches: ${matches.length}. Positions: ${matches.map(m=>m.index).join(', ')}`:'Not found in calculated data.';render();};$<HTMLInputElement>('#query').onkeydown=e=>{if(e.key==='Enter')$('#search').click();};return;}if(mode==='pixels'){p.innerHTML=`<h2>BUILD COLOR PATTERN</h2><div class="legend">${PALETTE.map((c,i)=>`<button class="swatch" data-d="${i}" style="background:${c}" aria-label="Add digit ${i}">${i}</button>`).join('')}</div><div class="result">Pattern: <b id="pattern">${pattern||'—'}</b></div><div class="search"><button id="patSearch">Search pattern</button><button id="patClear">Clear</button><div class="result" id="results">Choose palette digits; the exact underlying sequence is searched.</div></div>`;p.querySelectorAll<HTMLButtonElement>('[data-d]').forEach(b=>b.onclick=()=>{pattern+=b.dataset.d!;renderSearch();});$('#patClear').onclick=()=>{pattern='';renderSearch();};$('#patSearch').onclick=()=>{matches=pattern?findText(digits,pattern):[]; pixelResult();render();};return;}binaryPattern=Array.from({length:binarySize},(_,y)=>binaryPattern[y]?.padEnd(binarySize,'0').slice(0,binarySize)||'0'.repeat(binarySize));p.innerHTML=`<h2>DRAW PATTERN</h2><label>Grid size <select id="gridSize">${[3,4,5,6,8].map(n=>`<option ${n===binarySize?'selected':''}>${n}</option>`).join('')}</select></label><div class="grid" id="grid" style="grid-template-columns:repeat(${binarySize},23px)">${binaryPattern.join('').split('').map((v,i)=>`<button class="cell" data-i="${i}" style="background:${v==='1'?'#fff':'#000'}" aria-label="${v==='1'?'White':'Black'} cell"></button>`).join('')}</div><p class="notice">Black requires 0–4; white requires 5–9.</p><button id="binSearch">Search pattern</button> <button id="binClear">Clear</button><div class="result" id="results">Draw a binary pixel pattern.</div>`;$('#gridSize').onchange=()=>{binarySize=Number($<HTMLSelectElement>('#gridSize').value);binaryPattern=[];renderSearch();};p.querySelectorAll<HTMLButtonElement>('[data-i]').forEach(b=>b.onclick=()=>{const i=Number(b.dataset.i),y=Math.floor(i/binarySize),x=i%binarySize;binaryPattern[y]=binaryPattern[y].slice(0,x)+(binaryPattern[y][x]==='0'?'1':'0')+binaryPattern[y].slice(x+1);renderSearch();});$('#binClear').onclick=()=>{binaryPattern=[];renderSearch();};$('#binSearch').onclick=()=>{matches=findGrid(digits,width,binaryPattern,true);pixelResult();render();};}
-function pixelResult(){const r=$('#results');r.innerHTML=matches.length?`Matches: ${matches.length}. ${matches.map((m,i)=>`#${i+1}: x ${m.x}, y ${m.y}`).join(' ')}<br><button id="prev">Previous</button> <button id="next">Next</button>`:'Not found in calculated data.';$('#prev')?.addEventListener('click',()=>navigate(-1));$('#next')?.addEventListener('click',()=>navigate(1));}function navigate(delta:number){if(!matches.length)return;selected=(selected+delta+matches.length)%matches.length;renderer.focus(matches[selected]);render();}
-function updateStats(){const total=Number($<HTMLInputElement>('#count').value)||0;$('#progress').textContent=total?`${((digits.length/total)*100).toFixed(2)}%`:'0.00%';$('#calculated').textContent=fmt(digits.length);$('#iterations').textContent=fmt(iterations);$('#time').textContent=`${(elapsed/1000).toFixed(2)}s`;$('#rate').textContent=elapsed?`${fmt(Math.round(digits.length/(elapsed/1000)))} d/s`:'—';status(paused?'Paused':worker?'Calculating':'Ready');}
-function start(){const count=Number($<HTMLInputElement>('#count').value);if(!Number.isSafeInteger(count)||count<1||count>maxDigits){alert(`Enter a whole number from 1 to ${fmt(maxDigits)}.`);return;}if(count>100_000&&!confirm(`Calculating ${fmt(count)} digits may use roughly ${fmt(count*3)} bytes plus BigInt working memory and take time. Continue?`))return;worker?.terminate();digits='';matches=[];iterations=0;elapsed=0;started=performance.now();paused=false;worker=new Worker(new URL('./workers/pi.worker.ts',import.meta.url),{type:'module'});worker.onmessage=(e:MessageEvent<WorkerResponse>)=>{const m=e.data;if(m.type==='chunk'){digits+=m.digits;if(!paused)render();}else if(m.type==='progress'){iterations=m.iteration;elapsed=m.elapsedMs;}else if(m.type==='done'){iterations=m.iterations;elapsed=m.elapsedMs;worker?.terminate();worker=undefined;}else if(m.type==='error'){alert(m.message);worker?.terminate();worker=undefined;}updateStats();};worker.onerror=()=>{alert('The calculation worker failed.');stop();};worker.postMessage({type:'start',digits:count,updateEvery:Math.max(250,Math.round(2500/Number($<HTMLInputElement>('#speed').value)))});$('#start').setAttribute('disabled','');$('#pause').removeAttribute('disabled');$('#stop').removeAttribute('disabled');render();updateStats();}
-function stop(){worker?.postMessage({type:'cancel'});worker?.terminate();worker=undefined;paused=false;$('#start').removeAttribute('disabled');$('#pause').setAttribute('disabled','');$('#stop').setAttribute('disabled','');updateStats();}function reset(){stop();digits='';matches=[];iterations=elapsed=0;pattern='';binaryPattern=[];renderSearch();render();updateStats();}
-$('#mode').onchange=setMode;$('#start').onclick=start;$('#stop').onclick=stop;$('#reset').onclick=reset;$('#pause').onclick=()=>{if(!worker)return;paused=!paused;$('#pause').textContent=paused?'Resume':'Pause';if(!paused)render();updateStats();};$('#speed').oninput=()=>$('#speedLabel').textContent=`${$<HTMLInputElement>('#speed').value} / 10`;$('#export').onclick=()=>{if(mode==='pixels'||mode==='binary'){alert('Export is unavailable in Pixel mode.');return;}exportText(mode==='letters'?toLetters(digits):digits?'3.'+digits.slice(1):'',mode==='letters'?'pi-letters.txt':'pi-digits.txt');};canvas.addEventListener('wheel',e=>{e.preventDefault();renderer.zoom=Math.max(.25,Math.min(30,renderer.zoom*(e.deltaY<0?1.15:.87)));render();},{passive:false});let drag:{x:number;y:number}|undefined;canvas.onpointerdown=e=>{drag={x:e.clientX,y:e.clientY};canvas.setPointerCapture(e.pointerId);};canvas.onpointermove=e=>{if(!drag)return;renderer.panX+=e.clientX-drag.x;renderer.panY+=e.clientY-drag.y;drag={x:e.clientX,y:e.clientY};render();};canvas.onpointerup=()=>drag=undefined;window.addEventListener('resize',render);renderSearch();render();updateStats();
+import './styles/main.css';
+import { toLetters, PALETTE } from './modes/transforms';
+import { findGrid, findText, type Match } from './search/search';
+import { PixelRenderer } from './pixel/PixelRenderer';
+import { exportText } from './export/exportText';
+import type { WorkerResponse } from './pi/types';
+
+type Mode = 'normal' | 'search' | 'letters' | 'pixels' | 'binary';
+const MAX_DIGITS = 1_000_000;
+const app = document.querySelector<HTMLDivElement>('#app')!;
+let mode: Mode = 'normal';
+let digits = '';
+let worker: Worker | undefined;
+let iterations = 0;
+let elapsed = 0;
+let requested = 0;
+let paused = false;
+let digitsPerLine = 30;
+let matches: Match[] = [];
+let selected = 0;
+let width = 128;
+let colorPattern = '';
+let binarySize = 4;
+let binaryPattern: string[] = [];
+
+app.innerHTML = `
+  <header class="header">
+    <div class="brand"><b>π</b> PI EXPLORER</div>
+    <nav class="mode-nav" aria-label="Exploration modes">
+      <button data-mode="normal" class="active">NORMAL PI</button><button data-mode="search">SEARCH</button><button data-mode="letters">LETTERS</button><button data-mode="pixels">PIXEL</button><button data-mode="binary">BINARY GRID</button>
+    </nav>
+    <button id="create" class="primary">CREATE DIGITS</button>
+  </header>
+  <main class="workspace">
+    <section class="result-area">
+      <div class="result-toolbar">
+        <label>DIGITS PER LINE <select id="lineCount"><option>10</option><option>20</option><option selected>30</option><option>50</option><option>100</option><option value="custom">Custom…</option></select></label>
+        <input id="customLineCount" type="number" min="1" max="1000" hidden aria-label="Custom digits per line" />
+        <button id="export">EXPORT .TXT</button>
+      </div>
+      <section id="display" class="digit-display" aria-live="polite"></section>
+      <section id="canvasPanel" class="canvas-panel" hidden><canvas id="canvas" aria-label="Pi digit pixel canvas"></canvas></section>
+      <section class="metadata" aria-label="Calculation metadata">
+        <span>REQUESTED <b id="requested">—</b></span><span>CALCULATED <b id="calculated">0</b></span><span>ITERATIONS <b id="iterations">0</b></span><span>ELAPSED <b id="elapsed">0.00s</b></span><span>SPEED <b id="rate">—</b></span>
+      </section>
+    </section>
+    <aside id="toolPanel" class="tool-panel"></aside>
+  </main>
+  <section id="createModal" class="creation-modal" aria-modal="true" role="dialog" aria-labelledby="createTitle" hidden>
+    <div class="modal-content">
+      <div class="modal-heading"><p class="eyebrow">CHUDNOVSKY / BIGINT / WEB WORKER</p><h1 id="createTitle">CREATE PI DIGITS</h1><p>Choose how many digits of Pi you want to calculate.</p></div>
+      <div id="setupFields"><label class="large-input">DIGITS TO CALCULATE<input id="count" type="number" min="1" max="1000000" value="1000" inputmode="numeric" /></label><div class="presets" aria-label="Digit count presets"><button data-preset="100">100</button><button data-preset="1000">1,000</button><button data-preset="10000">10,000</button><button data-preset="100000">100,000</button><button data-preset="1000000">1,000,000</button></div><label class="speed-control">DELIVERY SPEED <input id="speed" type="range" min="1" max="10" value="7"/><span id="speedValue">7 / 10</span></label><p id="largeWarning" class="warning" hidden>Large calculations can require substantial memory and time. Only start if your computer has sufficient resources.</p></div>
+      <div id="calculationStatus" class="calculation-status" hidden><div class="progress-track"><i id="progressBar"></i></div><div class="modal-stats"><span>PROGRESS <b id="modalProgress">0.00%</b></span><span>CALCULATED <b id="modalCalculated">0</b></span><span>ITERATION <b id="modalIteration">0</b></span><span>ELAPSED <b id="modalElapsed">0.00s</b></span><span>SPEED <b id="modalSpeed">—</b></span></div><pre id="modalDigits" class="modal-digits">π = awaiting calculation…</pre></div>
+      <div class="modal-actions"><button id="cancel">CANCEL</button><button id="start" class="primary">START CALCULATION</button><button id="continue" class="primary" hidden>VIEW RESULT</button></div>
+    </div>
+  </section>`;
+
+const $ = <T extends HTMLElement>(selector: string) => app.querySelector<T>(selector)!;
+const display = $('#display');
+const canvasPanel = $('#canvasPanel');
+const canvas = $<HTMLCanvasElement>('#canvas');
+const renderer = new PixelRenderer(canvas);
+const modal = $('#createModal');
+
+function escapeHtml(value: string): string { return value.replace(/[&<>]/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[char]!)); }
+function formatDigits(): string {
+  if (!digits) return `<div class="empty-state"><span>π</span><p>Create a real Pi dataset to begin exploration.</p></div>`;
+  const highlighted = new Set<number>();
+  for (const match of matches) for (let i = match.index; i < match.index + match.length; i++) highlighted.add(i);
+  let output = '<div class="pi-prefix">π = </div><div class="pi-lines">';
+  for (let i = 0; i < digits.length; i++) {
+    if (i === 1) output += '.';
+    output += highlighted.has(i) ? `<mark>${digits[i]}</mark>` : escapeHtml(digits[i]);
+    if (i > 0 && (i % digitsPerLine === 0) && i < digits.length - 1) output += '\n';
+  }
+  return `${output}</div>`;
+}
+function render(): void {
+  canvasPanel.hidden = mode !== 'pixels' && mode !== 'binary';
+  if (mode === 'letters') {
+    display.innerHTML = `<div class="letter-source">SOURCE DIGITS<br>${formatDigits()}</div><div class="letter-result">CONVERTED LETTERS<br>${escapeHtml(toLetters(digits)) || '—'}</div><p class="mapping-note">Pairs 01–26 map to A–Z; 27 and above wrap cyclically; 00 maps to a space.</p>`;
+  } else if (mode === 'pixels' || mode === 'binary') {
+    display.innerHTML = `<p class="canvas-description">${mode === 'pixels' ? 'Every calculated digit is shown with its deterministic palette color.' : 'Digits 0–4 are black; digits 5–9 are white.'} Index i → x = i mod ${width}, y = floor(i / ${width}). Use wheel to zoom and drag to pan.</p>`;
+    renderer.render(digits, width, mode === 'binary', matches);
+  } else display.innerHTML = formatDigits();
+}
+function updateMetadata(): void {
+  const rate = elapsed ? `${Math.round(digits.length / (elapsed / 1000)).toLocaleString()} d/s` : '—';
+  $('#requested').textContent = requested ? requested.toLocaleString() : '—'; $('#calculated').textContent = digits.length.toLocaleString(); $('#iterations').textContent = iterations.toLocaleString(); $('#elapsed').textContent = `${(elapsed / 1000).toFixed(2)}s`; $('#rate').textContent = rate;
+  const progress = requested ? Math.min(100, digits.length / requested * 100) : 0;
+  $('#modalProgress').textContent = `${progress.toFixed(2)}%`; $('#modalCalculated').textContent = digits.length.toLocaleString(); $('#modalIteration').textContent = iterations.toLocaleString(); $('#modalElapsed').textContent = `${(elapsed / 1000).toFixed(2)}s`; $('#modalSpeed').textContent = rate; $<HTMLElement>('#progressBar').style.width = `${progress}%`;
+  $('#modalDigits').textContent = digits ? `π = ${digits.slice(0, 180)}${digits.length > 180 ? '…' : ''}` : 'π = calculating exact terms…';
+}
+function setMode(next: Mode): void { mode = next; matches = []; selected = 0; app.querySelectorAll<HTMLButtonElement>('[data-mode]').forEach(button => button.classList.toggle('active', button.dataset.mode === mode)); renderTools(); render(); }
+function renderTools(): void {
+  const panel = $('#toolPanel');
+  if (mode === 'normal') { panel.innerHTML = `<h2>NORMAL PI</h2><p>Exact Chudnovsky digits calculated in a dedicated Web Worker. Set the line length above without recalculating.</p>`; return; }
+  if (mode === 'search') { panel.innerHTML = `<h2>SEARCH CALCULATED DIGITS</h2><input id="query" inputmode="numeric" aria-label="Digit sequence" placeholder="e.g. 1415"/><button id="search" class="primary">SEARCH</button><p id="searchResult">Searches only the digits that have actually been calculated. Overlapping matches are included.</p>`; const query = $<HTMLInputElement>('#query'); const search = () => { if (!/^\d+$/.test(query.value)) { $('#searchResult').textContent = 'Enter a non-empty digit sequence.'; return; } matches = findText(digits, query.value); $('#searchResult').textContent = matches.length ? `Matches: ${matches.length}. Positions: ${matches.map(item => item.index).join(', ')}` : 'Not found in calculated digits.'; render(); }; $('#search').onclick = search; query.onkeydown = event => { if (event.key === 'Enter') search(); }; return; }
+  if (mode === 'letters') { panel.innerHTML = `<h2>NUMBER → LETTER</h2><p>Two digits form a letter. This mode preserves the calculated source above and provides selectable converted text.</p><button id="exportLetters">EXPORT LETTERS</button>`; $('#exportLetters').onclick = () => exportText(toLetters(digits), 'pi-letters.txt'); return; }
+  if (mode === 'pixels') { panel.innerHTML = `<h2>BUILD COLOR PATTERN</h2><div class="legend">${PALETTE.map((color, digit) => `<button class="swatch" data-digit="${digit}" style="background:${color}" aria-label="Add digit ${digit}">${digit}</button>`).join('')}</div><p>Pattern: <b id="patternValue">${colorPattern || '—'}</b></p><button id="patternSearch" class="primary">SEARCH PATTERN</button><button id="patternClear">CLEAR</button><p id="patternResult">Choose colors to search the exact underlying Pi digits.</p>`; panel.querySelectorAll<HTMLButtonElement>('[data-digit]').forEach(button => button.onclick = () => { colorPattern += button.dataset.digit!; renderTools(); }); $('#patternClear').onclick = () => { colorPattern = ''; renderTools(); }; $('#patternSearch').onclick = () => { matches = colorPattern ? findText(digits, colorPattern).map(match => ({ ...match, x: match.index % width, y: Math.floor(match.index / width), spanWidth: match.length, spanHeight: 1 })) : []; showPixelResults(); render(); }; return; }
+  binaryPattern = Array.from({ length: binarySize }, (_, y) => binaryPattern[y]?.padEnd(binarySize, '0').slice(0, binarySize) ?? '0'.repeat(binarySize));
+  panel.innerHTML = `<h2>DRAW BINARY PATTERN</h2><label>GRID SIZE <select id="gridSize">${[3, 4, 5, 6, 8].map(size => `<option value="${size}" ${size === binarySize ? 'selected' : ''}>${size} × ${size}</option>`).join('')}</select></label><div class="pattern-grid" style="grid-template-columns:repeat(${binarySize}, 24px)">${binaryPattern.join('').split('').map((value, index) => `<button data-cell="${index}" class="cell" style="background:${value === '1' ? '#ffffff' : '#000000'}" aria-label="${value === '1' ? 'White' : 'Black'} cell"></button>`).join('')}</div><p>Black requires 0–4. White requires 5–9.</p><button id="binarySearch" class="primary">SEARCH PATTERN</button><button id="binaryClear">CLEAR</button><p id="patternResult">Draw a pattern and search exact digit ranges.</p>`;
+  $<HTMLSelectElement>('#gridSize').onchange = event => { binarySize = Number((event.target as HTMLSelectElement).value); binaryPattern = []; renderTools(); };
+  panel.querySelectorAll<HTMLButtonElement>('[data-cell]').forEach(button => button.onclick = () => { const index = Number(button.dataset.cell); const y = Math.floor(index / binarySize), x = index % binarySize; binaryPattern[y] = binaryPattern[y].slice(0, x) + (binaryPattern[y][x] === '0' ? '1' : '0') + binaryPattern[y].slice(x + 1); renderTools(); });
+  $('#binaryClear').onclick = () => { binaryPattern = []; renderTools(); }; $('#binarySearch').onclick = () => { matches = findGrid(digits, width, binaryPattern, true); showPixelResults(); render(); };
+}
+function showPixelResults(): void { const result = $('#patternResult'); result.innerHTML = matches.length ? `Matches: ${matches.length}. ${matches.map((match, index) => `#${index + 1} (${match.x}, ${match.y})`).join(' ')}<br><button id="previous">PREVIOUS</button> <button id="next">NEXT</button>` : 'Not found in calculated digits.'; $('#previous')?.addEventListener('click', () => navigate(-1)); $('#next')?.addEventListener('click', () => navigate(1)); }
+function navigate(delta: number): void { if (!matches.length) return; selected = (selected + delta + matches.length) % matches.length; renderer.focus(matches[selected]); render(); }
+function openModal(): void { modal.hidden = false; $('#setupFields').hidden = false; $('#calculationStatus').hidden = true; $('#start').hidden = false; $('#continue').hidden = true; $('#cancel').textContent = 'CANCEL'; $<HTMLInputElement>('#count').focus(); }
+function closeModal(): void { modal.hidden = true; }
+function startCalculation(): void {
+  const count = Number($<HTMLInputElement>('#count').value);
+  if (!Number.isSafeInteger(count) || count < 1 || count > MAX_DIGITS) { $('#largeWarning').hidden = false; $('#largeWarning').textContent = `Enter a whole number between 1 and ${MAX_DIGITS.toLocaleString()}.`; return; }
+  requested = count; digits = ''; matches = []; iterations = 0; elapsed = 0; paused = false;
+  $('#setupFields').hidden = true; $('#calculationStatus').hidden = false; $('#start').hidden = true; $('#cancel').textContent = 'STOP'; updateMetadata(); render();
+  worker?.terminate(); worker = new Worker(new URL('./workers/pi.worker.ts', import.meta.url), { type: 'module' });
+  worker.onmessage = (event: MessageEvent<WorkerResponse>) => { const message = event.data; if (message.type === 'progress') { iterations = message.iteration; elapsed = message.elapsedMs; } else if (message.type === 'chunk') { digits += message.digits; } else if (message.type === 'done') { iterations = message.iterations; elapsed = message.elapsedMs; worker?.terminate(); worker = undefined; $('#continue').hidden = false; $('#cancel').hidden = true; } else { worker?.terminate(); worker = undefined; $('#largeWarning').hidden = false; $('#largeWarning').textContent = message.message; $('#setupFields').hidden = false; $('#calculationStatus').hidden = true; $('#start').hidden = false; } updateMetadata(); render(); };
+  worker.onerror = () => { worker?.terminate(); worker = undefined; $('#largeWarning').hidden = false; $('#largeWarning').textContent = 'The calculation worker failed.'; };
+  worker.postMessage({ type: 'start', digits: count, updateEvery: Math.max(250, Math.round(2500 / Number($<HTMLInputElement>('#speed').value))) });
+}
+function stopCalculation(): void { worker?.postMessage({ type: 'cancel' }); worker?.terminate(); worker = undefined; closeModal(); updateMetadata(); }
+
+app.querySelectorAll<HTMLButtonElement>('[data-mode]').forEach(button => button.onclick = () => setMode(button.dataset.mode as Mode));
+$('#create').onclick = openModal; $('#cancel').onclick = () => worker ? stopCalculation() : closeModal(); $('#continue').onclick = closeModal; $('#start').onclick = startCalculation;
+app.querySelectorAll<HTMLButtonElement>('[data-preset]').forEach(button => button.onclick = () => { $<HTMLInputElement>('#count').value = button.dataset.preset!; $('#largeWarning').hidden = Number(button.dataset.preset) <= 100_000; });
+$<HTMLInputElement>('#count').oninput = () => { $('#largeWarning').hidden = Number($<HTMLInputElement>('#count').value) <= 100_000; };
+$('#speed').oninput = () => $('#speedValue').textContent = `${$<HTMLInputElement>('#speed').value} / 10`;
+$<HTMLSelectElement>('#lineCount').onchange = event => { const value = (event.target as HTMLSelectElement).value; const custom = $<HTMLInputElement>('#customLineCount'); custom.hidden = value !== 'custom'; if (value !== 'custom') { digitsPerLine = Number(value); render(); } else custom.focus(); };
+$<HTMLInputElement>('#customLineCount').oninput = event => { const value = Number((event.target as HTMLInputElement).value); if (Number.isSafeInteger(value) && value > 0 && value <= 1000) { digitsPerLine = value; render(); } };
+$('#export').onclick = () => { if (mode === 'pixels' || mode === 'binary') { alert('Export is unavailable in Pixel mode.'); return; } exportText(mode === 'letters' ? toLetters(digits) : digits ? `${digits[0]}.${digits.slice(1)}` : '', mode === 'letters' ? 'pi-letters.txt' : 'pi-digits.txt'); };
+canvas.addEventListener('wheel', event => { event.preventDefault(); renderer.zoom = Math.max(.25, Math.min(30, renderer.zoom * (event.deltaY < 0 ? 1.15 : .87))); render(); }, { passive: false });
+let drag: { x: number; y: number } | undefined; canvas.onpointerdown = event => { drag = { x: event.clientX, y: event.clientY }; canvas.setPointerCapture(event.pointerId); }; canvas.onpointermove = event => { if (!drag) return; renderer.panX += event.clientX - drag.x; renderer.panY += event.clientY - drag.y; drag = { x: event.clientX, y: event.clientY }; render(); }; canvas.onpointerup = () => { drag = undefined; };
+window.addEventListener('resize', render); renderTools(); render(); updateMetadata();
